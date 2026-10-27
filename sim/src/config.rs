@@ -374,6 +374,10 @@ pub enum SimError {
 pub struct SimModel {
     /// The config-driven provider (shared with the serve loop and mutation task).
     pub provider: std::sync::Arc<crate::provider::SimProvider>,
+    /// Config item name (e.g. "P1") → [`PointKind`]; immutable after startup,
+    /// so the mutation loop can resolve kinds without taking the provider's
+    /// async lock (`point_kind_of` blocks, which panics on a tokio worker).
+    pub point_kinds: HashMap<String, PointKind>,
     pub bilateral: std::sync::Arc<BilateralTable>,
     /// Parsed bind address (validated in `build_model`).
     pub bind_ip: std::net::Ipv4Addr,
@@ -421,6 +425,7 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
     // name (e.g. "P1") → ObjectName for dataset members and access overrides.
     let mut points: HashMap<String, (ObjectName, PointKind, PointValue)> = HashMap::new();
     let mut point_items: HashMap<String, ObjectName> = HashMap::new();
+    let mut point_kinds: HashMap<String, PointKind> = HashMap::new();
     for p in &cfg.points {
         if point_items.contains_key(&p.name) {
             return Err(SimError::Config(format!("duplicate point name {:?}", p.name)));
@@ -428,7 +433,8 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
         let name = object_name(Some(&domain), &Identifier::new(&p.name).map_err(|e| SimError::Config(e.to_string()))?);
         let value = initial_value(p.kind, &p.initial)?;
         point_items.insert(p.name.clone(), name.clone());
-        points.insert(crate::provider::object_key(&name), (name, p.kind, value));
+        points.insert(crate::provider::object_key(&name), (name.clone(), p.kind, value));
+        point_kinds.insert(p.name.clone(), p.kind);
     }
 
     // ---- datasets ---------------------------------------------------------
@@ -497,6 +503,7 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
 
     Ok(SimModel {
         provider,
+        point_kinds,
         bilateral: std::sync::Arc::new(bilat),
         bind_ip,
         port: cfg.port,
@@ -506,7 +513,9 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
 }
 
 /// Build a mutation step value for `point` (must exist) from a JSON value.
+/// Uses the immutable startup-side map rather than the provider's async lock
+/// (which would panic when called from a tokio worker thread).
 pub fn mutation_value(model: &SimModel, point_name: &str, raw: &serde_json::Value) -> Option<PointValue> {
-    let kind = model.provider.point_kind_of(point_name)?;
+    let kind = *model.point_kinds.get(point_name)?;
     value_for_kind(kind, raw)
 }

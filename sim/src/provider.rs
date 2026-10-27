@@ -72,8 +72,13 @@ impl SimProvider {
         }
     }
 
-    /// The `PointKind` of a point keyed by item name (for the mutation loop).
-    /// Resolves the item name against the stored [`ObjectName`]s.
+    /// The `PointKind` of a point keyed by item name. Resolves the item name
+    /// against the stored [`ObjectName`]s.
+    ///
+    /// NOTE: blocks on the provider lock — do NOT call from tokio worker
+    /// threads. The mutation loop instead uses `SimModel::point_kinds`
+    /// (immutable, built at startup).
+    #[allow(dead_code)]
     pub fn point_kind_of(&self, item: &str) -> Option<PointKind> {
         let g = self.inner.blocking_read();
         g.points.values().find_map(|(n, k, _)| match n {
