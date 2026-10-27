@@ -1,0 +1,54 @@
+# ICCP/TASE.2 server simulator — self-contained workspace.
+#
+# Vendored (not upstream-tracked) copies of the three protocol crates from
+# janfietz/telcon-tase2 (MIT OR Apache-2.0), plus the `iccp-sim` binary that
+# turns them into a config-driven simulator for OpenICCP interop testing.
+#
+# Nothing in this workspace is published; it only builds locally.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/mms-proto",
+    "crates/tase2-proto",
+    "crates/tase2",
+    "sim",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.83"
+authors = ["iccp-sim (vendored from janfietz/telcon-tase2)"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/janfietz/telcon-tase2"
+description = "Vendored telcon-tase2 protocol crates + iccp-sim simulator"
+
+[workspace.dependencies]
+# Internal (vendored)
+mms-proto = { version = "0.1.0-dev", path = "crates/mms-proto" }
+tase2-proto = { version = "0.1.0-dev", path = "crates/tase2-proto" }
+tase2 = { version = "0.1.0-dev", path = "crates/tase2" }
+
+# Errors / logging
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Bytes
+bytes = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "net", "sync", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+async-trait = "0.1"
+
+# TLS (optional; referenced by tase2's `tls` feature, which we leave off)
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls-pemfile = "2"
+sha2 = "0.10"
+
+# Config parsing (sim only)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

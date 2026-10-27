@@ -1,0 +1,15 @@
+[package]
+name = "tase2-proto"
+description = "Sans-I/O TASE.2 (IEC 60870-6 / ICCP) domain layer on top of mms-proto."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["tase2", "iccp", "iec60870", "scada", "protocol"]
+categories = ["network-programming", "encoding", "parser-implementations"]
+
+[dependencies]
+mms-proto = { workspace = true }
+thiserror = { workspace = true }

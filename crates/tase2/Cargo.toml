@@ -1,0 +1,33 @@
+[package]
+name = "tase2"
+description = "Async TASE.2 (IEC 60870-6 / ICCP) client and server on tokio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["tase2", "iccp", "iec60870", "scada", "tokio"]
+categories = ["network-programming", "asynchronous"]
+
+[features]
+default = []
+tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-pemfile", "dep:sha2"]
+
+[dependencies]
+mms-proto = { workspace = true }
+tase2-proto = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+# TLS (optional)
+tokio-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }

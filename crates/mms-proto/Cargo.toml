@@ -1,0 +1,15 @@
+[package]
+name = "mms-proto"
+description = "Sans-I/O implementation of the MMS (ISO 9506) protocol stack: ASN.1 BER, TPKT, COTP, ISO Session/Presentation/ACSE, and MMS services."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["mms", "iso9506", "ber", "scada", "iec61850"]
+categories = ["network-programming", "encoding", "parser-implementations"]
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }

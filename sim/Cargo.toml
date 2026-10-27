@@ -1,0 +1,23 @@
+[package]
+name = "iccp-sim"
+description = "Config-driven ICCP/TASE.2 server simulator for OpenICCP interop testing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "iccp-sim"
+path = "src/main.rs"
+
+[dependencies]
+tase2 = { workspace = true }
+mms-proto = { workspace = true }
+tase2-proto = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
