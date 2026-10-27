@@ -13,7 +13,7 @@
 mod config;
 mod provider;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -80,9 +80,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let model = build_model(&cfg).map_err(|e| e.to_string())?;
 
-    // Bind. Port 102 may need elevation on some OSes; a CLI --port override lets
-    // the operator pick an alternate port without editing the config.
-    let addr: SocketAddr = (Ipv4Addr::UNSPECIFIED, model.port).into();
+    // Bind. The address comes from the config `ip` field (default 0.0.0.0 =
+    // all interfaces); port 102 may need elevation on some OSes, and a CLI
+    // --port override lets the operator pick an alternate port without
+    // editing the config.
+    let addr: SocketAddr = (model.bind_ip, model.port).into();
     let server = Tase2Server::bind(addr, AssocConfig::default()).await?;
     tracing::info!(%addr, domain = %model.domain, "iccp-sim listening");
 
@@ -141,6 +143,12 @@ async fn spawn_mutation_task(model: SimModel, manager: Arc<TransferSetManager<Si
             ticker.tick().await;
             idx += 1;
             for mp in &model.mutation.points {
+                // build_model already rejects empty value lists at startup;
+                // this guard keeps the modulo total even if the check is ever
+                // bypassed (idx % 0 would panic).
+                if mp.values.is_empty() {
+                    continue;
+                }
                 let raw = match mp.values.get(idx % mp.values.len()) {
                     Some(v) => v,
                     None => continue,

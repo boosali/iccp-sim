@@ -69,6 +69,8 @@ impl Feature {
 pub struct SimConfig {
     /// MMS domain the client associates to (OpenICCP domain name).
     pub domain: String,
+    /// IPv4 address to bind (default "0.0.0.0" = all interfaces).
+    pub ip: String,
     /// TCP port to listen on (default 102).
     pub port: u16,
     /// Identifier advertised as `Bilateral_Table_ID` (typically BLT1).
@@ -94,6 +96,7 @@ impl Default for SimConfig {
     fn default() -> Self {
         Self {
             domain: "ICC1".into(),
+            ip: "0.0.0.0".into(),
             port: 102,
             bilateral_table_id: "BLT1".into(),
             tase2_version: Tase2VersionCfg::default(),
@@ -372,6 +375,8 @@ pub struct SimModel {
     /// The config-driven provider (shared with the serve loop and mutation task).
     pub provider: std::sync::Arc<crate::provider::SimProvider>,
     pub bilateral: std::sync::Arc<BilateralTable>,
+    /// Parsed bind address (validated in `build_model`).
+    pub bind_ip: std::net::Ipv4Addr,
     pub port: u16,
     pub mutation: MutationCfg,
     pub domain: String,
@@ -392,6 +397,22 @@ const CONTROL_MEMBERS: [&str; 4] = [
 ];
 
 pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
+    let bind_ip: std::net::Ipv4Addr = cfg
+        .ip
+        .parse()
+        .map_err(|e| SimError::Config(format!("bad bind ip {:?}: {e}", cfg.ip)))?;
+
+    // Fail fast if the mutation loop would never have a value to write:
+    // `idx % 0` would panic (integer division by zero) at runtime.
+    for mp in &cfg.mutation.points {
+        if mp.values.is_empty() {
+            return Err(SimError::Config(format!(
+                "mutation point {:?} has an empty values list",
+                mp.name
+            )));
+        }
+    }
+
     let domain = DomainName::from(Identifier::new(&cfg.domain).map_err(|e| SimError::Config(e.to_string()))?);
 
     // ---- points -----------------------------------------------------------
@@ -477,6 +498,7 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
     Ok(SimModel {
         provider,
         bilateral: std::sync::Arc::new(bilat),
+        bind_ip,
         port: cfg.port,
         mutation: cfg.mutation.clone(),
         domain: cfg.domain.clone(),
