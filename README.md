@@ -34,7 +34,6 @@ sim/
 │   ├── mms-proto/        # MMS (ISO 9506) wire codec — TPKT/COTP/ACSE/BER
 │   ├── tase2-proto/      # TASE.2 protocol types (points, datasets, reports)
 │   └── tase2/            # async TASE.2 server/client on tokio
-│       └── examples/     # simple_server / simple_client reference examples
 └── sim/                  # the iccp-sim binary (config.rs, provider.rs, main.rs)
 ```
 
@@ -128,16 +127,19 @@ Logging goes to stderr via `tracing`; set `RUST_LOG` to tune verbosity
 
 ### Quick self-test without a real client
 
-The vendored crate ships a loopback client example you can use for a smoke test
-(it expects exactly the `config.example.json` profile: domain `ICC1`, `P1`
-discrete 10, `P2` 20, dataset `DS1`):
+The upstream repo `janfietz/telcon-tase2` ships loopback examples
+(`crates/tase2/examples/simple_server.rs` + `simple_client.rs`) that are not
+vendored here, but make a useful smoke test. They run a minimal TASE.2 server
+serving exactly the `config.example.json` profile (domain `ICC1`, `P1` discrete
+10, `P2` 20, dataset `DS1`) on port 102 — so run them from a checkout of the
+upstream repo, not this workspace:
 
 ```powershell
+cd <checkout of janfietz/telcon-tase2>
 # terminal 1
-cargo run -p tase2 --example simple_server    # or just run iccp-sim
-
+cargo run --example simple_server
 # terminal 2
-cargo run -p tase2 --example simple_client
+cargo run --example simple_client
 # expect: P1 = Discrete(10), a few InformationReports, then clean release
 ```
 
