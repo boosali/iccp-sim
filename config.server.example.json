@@ -1,0 +1,37 @@
+{
+  "mode": "server",
+  "domain": "ICC1",
+  "ip": "0.0.0.0",
+  "port": 102,
+  "bilateral_table_id": "BLT1",
+  "tase2_version": { "major": 1, "minor": 0 },
+  "supported_features": [
+    "ds_transfer",
+    "cov",
+    "device_control",
+    "bilateral_access"
+  ],
+  "access": {
+    "domain_read": true,
+    "domain_read_write": false,
+    "dataset_ops": true,
+    "points": {
+      "P1": "read_write",
+      "P2": "read_write"
+    }
+  },
+  "points": [
+    { "name": "P1", "kind": "discrete", "initial": 10 },
+    { "name": "P2", "kind": "discrete", "initial": 20 }
+  ],
+  "datasets": [
+    { "name": "DS1", "members": ["P1", "P2"] }
+  ],
+  "mutation": {
+    "interval_secs": 2,
+    "points": [
+      { "name": "P1", "values": [10, 0, 10] },
+      { "name": "P2", "values": [20, 0, 20] }
+    ]
+  }
+}

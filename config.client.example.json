@@ -1,0 +1,19 @@
+{
+  "mode": "client",
+  "client": {
+    "peer_ip": "127.0.0.1",
+    "port": 102,
+    "domain": "ICC1",
+    "dataset": "DS1",
+    "dataset_points": ["P1", "P2"],
+    "transfer_set": {
+      "conditions": ["object_change"],
+      "buffer_time": 0,
+      "rbe": true,
+      "interval": 0,
+      "integrity_check": 0,
+      "event_code": 0
+    },
+    "run_for_secs": 0
+  }
+}

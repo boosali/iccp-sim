@@ -67,6 +67,11 @@ impl Feature {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SimConfig {
+    /// Which role to run: `server` (default, the simulator) or `client`
+    /// (a TASE.2 caller).
+    pub mode: Mode,
+    /// Client-mode settings; ignored when `mode == "server"`.
+    pub client: ClientCfg,
     /// MMS domain the client associates to (OpenICCP domain name).
     pub domain: String,
     /// IPv4 address to bind (default "0.0.0.0" = all interfaces).
@@ -95,6 +100,8 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
+            mode: Mode::Server,
+            client: ClientCfg::default(),
             domain: "ICC1".into(),
             ip: "0.0.0.0".into(),
             port: 102,
@@ -209,6 +216,100 @@ impl Default for MutationCfg {
 pub struct MutationPointCfg {
     pub name: String,
     pub values: Vec<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Client (calling role) configuration
+// ---------------------------------------------------------------------------
+
+/// Which role `iccp-sim` runs as. The `server` role is the simulator (it
+/// listens and is associated to); the `client` role is a TASE.2 caller (it
+/// connects out, enumerates, and receives reports) — handy for exercising a
+/// real (or second) ICCP peer and for round-trip interop tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// The "called" role: bind a port and serve associations.
+    #[default]
+    Server,
+    /// The "calling" role: connect to a peer and act as a TASE.2 client.
+    Client,
+}
+
+/// Client-mode configuration. Only used when `mode == "client"`; the
+/// server-only fields above (`points`, `datasets`, `access`, `mutation`,
+/// `bilateral_table_id`, …) are ignored in this mode.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ClientCfg {
+    /// Peer (server) host to connect to (default `127.0.0.1`).
+    pub peer_ip: String,
+    /// Peer (server) port (default 102).
+    pub port: u16,
+    /// Domain to enumerate and read from the peer (default `ICC1`).
+    pub domain: String,
+    /// Data set name in the peer's domain to arm a DS-transfer-set against
+    /// (condition-monitoring / COV reports).
+    pub dataset: String,
+    /// The point members of that data set, in order (e.g. `["P1", "P2"]`).
+    /// The client uses these to decode incoming COV reports (a report carries
+    /// one value per member, so the member list must be known up front — the
+    /// 4 ICCP control members are prepended automatically).
+    pub dataset_points: Vec<String>,
+    /// The DS-transfer-set attributes the client writes to arm reporting.
+    pub transfer_set: TransferSetCfg,
+    /// Seconds the client stays associated before concluding (0 = run
+    /// indefinitely until the peer drops the association).
+    pub run_for_secs: u64,
+}
+
+impl Default for ClientCfg {
+    fn default() -> Self {
+        Self {
+            peer_ip: "127.0.0.1".into(),
+            port: 102,
+            domain: "ICC1".into(),
+            dataset: String::new(),
+            dataset_points: Vec::new(),
+            transfer_set: TransferSetCfg::default(),
+            run_for_secs: 0,
+        }
+    }
+}
+
+/// DS-transfer-set attributes the client writes (`Next_DSTransfer_Set` claim
+/// + attribute write) to arm condition monitoring. `status` is forced `true`
+/// when arming; the remaining fields control which trigger conditions fire and
+/// how.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TransferSetCfg {
+    /// Trigger condition names: `interval_timeout`, `integrity_timeout`,
+    /// `object_change`, `operator_request`, `external_event`.
+    pub conditions: Vec<String>,
+    /// `Interval` in seconds (drives `interval_timeout`).
+    pub interval: i32,
+    /// `IntegrityCheck` in seconds (drives `integrity_timeout`).
+    pub integrity_check: i32,
+    /// `BufferTime` in seconds (object-change coalescing window).
+    pub buffer_time: i32,
+    /// `EventCodeRequested` (i16).
+    pub event_code: i16,
+    /// `RBE` — report by exception (only changed objects).
+    pub rbe: bool,
+}
+
+impl Default for TransferSetCfg {
+    fn default() -> Self {
+        Self {
+            conditions: vec!["object_change".to_owned()],
+            interval: 0,
+            integrity_check: 0,
+            buffer_time: 0,
+            event_code: 0,
+            rbe: true,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +441,32 @@ pub fn initial_value(kind: PointKind, raw: &serde_json::Value) -> Result<PointVa
 
 fn value_for_kind(kind: PointKind, raw: &serde_json::Value) -> Option<PointValue> {
     initial_value(kind, raw).ok()
+}
+
+/// Translate a config condition name to its [`DsConditions`] bit, or `None`
+/// for an unrecognized name.
+fn condition_from_str(s: &str) -> Option<tase2_proto::transfer_set::DsConditions> {
+    use tase2_proto::transfer_set::DsConditions as C;
+    Some(match s {
+        "interval_timeout" => C::INTERVAL_TIMEOUT,
+        "integrity_timeout" => C::INTEGRITY_TIMEOUT,
+        "object_change" => C::OBJECT_CHANGE,
+        "operator_request" => C::OPERATOR_REQUEST,
+        "external_event" => C::EXTERNAL_EVENT,
+        _ => return None,
+    })
+}
+
+/// Build the requested [`DsConditions`] mask from a list of condition names.
+pub fn build_conditions(names: &[String]) -> Result<tase2_proto::transfer_set::DsConditions, SimError> {
+    let mut mask = tase2_proto::transfer_set::DsConditions::empty();
+    for n in names {
+        let Some(bit) = condition_from_str(n) else {
+            return Err(SimError::Config(format!("unknown condition {n:?}")));
+        };
+        mask.insert(bit);
+    }
+    Ok(mask)
 }
 
 /// Seconds since the Unix epoch (for default timestamps).

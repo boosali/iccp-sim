@@ -145,7 +145,57 @@ cargo run --example simple_client
 
 ---
 
+## Client mode
+
+`iccp-sim` can also run as the **client** (the ICCP *calling* role): it
+connects to a TASE.2 server, does discovery, claims a data-set transfer set,
+and logs every COV Information Report it receives — useful for testing a real
+server, and for driving this project's own server as a self-test.
+
+Set `"mode": "client"` and fill in the `client` block. See
+[`config.client.example.json`](config.client.example.json).
+
+```powershell
+# terminal 1 — a server (this project's, or a real ICCP/TASE.2 server)
+iccp-sim.exe -c config.server.example.json
+# terminal 2 — the client, connecting to it
+iccp-sim.exe -c config.client.example.json
+```
+
+The client logs, per transfer-set report: the report id, the `DSConditions`
+(reasons), the event code, and each member's value — decoded against the
+`dataset` you name. Example:
+
+```
+[report #1] conditions=object_change event_code=0
+  P1 = 10
+  P2 = 20
+```
+
+### Self-test pair (no real ICCP hardware)
+
+Run this project as both ends to exercise the full loop end-to-end over local
+TCP. Use `--port` (or a non-privileged `port`) to avoid needing admin for 102:
+
+```powershell
+iccp-sim.exe -c config.server.example.json --port 2404
+iccp-sim.exe -c config.client.example.json --port 2404   # client block port must match
+```
+
+Set `client.run_for_secs` (default 300) to auto-release after that many
+seconds; leave the client running to watch reports continuously.
+
+> The client does not re-read the data-set definition; it decodes members
+> using `client.dataset_points` (the data-set's point members in order),
+> which must match the server's dataset.
+
+---
+
 ## Configuration reference
+
+The `mode` field selects the role: `"server"` (default) or `"client"`. The
+server fields (`domain`, `ip`, `port`, `points`, …) apply in server mode; the
+`client` block applies in client mode.
 
 Full working example: [`config.example.json`](config.example.json).
 Unknown fields are rejected (typo protection). All values below are
@@ -210,6 +260,32 @@ Every `interval_secs`, each listed point advances one step through `values`
 (wrapping). Each step writes the new value and notifies the transfer-set
 manager, so any client transfer set on a dataset containing that point emits an
 OBJECT_CHANGE Information Report. An empty `values` list is rejected at startup.
+
+### Client block
+
+```json
+"mode": "client",
+"client": {
+  "peer_ip": "127.0.0.1",
+  "port": 102,
+  "domain": "ICC1",
+  "transfer_set": "DSTransferSet1",
+  "dataset": "DS1",
+  "dataset_points": ["P1", "P2"],
+  "run_for_secs": 300
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `mode` | string | `"server"` (default) or `"client"` |
+| `client.peer_ip` | string | Server IP to connect to |
+| `client.port` | int | Server TCP port |
+| `client.domain` | string | MMS domain to associate (match the server's `domain`) |
+| `client.transfer_set` | string | `Next_DSTransfer_Set` instance to claim (e.g. `DSTransferSet1`) |
+| `client.dataset` | string | Data set to arm on the transfer set (match the server's dataset) |
+| `client.dataset_points` | string[] | Data-set point members, in order — used to decode report values |
+| `client.run_for_secs` | int | Release automatically after this many seconds (default 300) |
 
 ---
 

@@ -10,6 +10,7 @@
 //! iccp-sim -c config.json
 //! ```
 
+mod client_sim;
 mod config;
 mod provider;
 
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::{build_model, load_config_file, mutation_value, SimModel};
+use config::{build_model, load_config_file, mutation_value, Mode, SimModel};
 use provider::SimProvider;
 use tase2::{
     AssocConfig, DataProvider, DefaultLoggingHandler, Identifier, ObjectName, ServeOptions,
@@ -75,10 +76,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = parse_args()?;
     let mut cfg = load_config_file(&cli.config).map_err(|e| e.to_string())?;
-    if let Some(p) = cli.port {
-        cfg.port = p;
+
+    // Dispatch on role. `--port` overrides the active role's port.
+    match cfg.mode {
+        Mode::Client => {
+            if let Some(p) = cli.port {
+                cfg.client.port = p;
+            }
+            return client_sim::run(&cfg.client).await.map_err(|e| e.into());
+        }
+        Mode::Server => {
+            if let Some(p) = cli.port {
+                cfg.port = p;
+            }
+            run_server(&cfg).await
+        }
     }
-    let model = build_model(&cfg).map_err(|e| e.to_string())?;
+}
+
+/// The server (called) role: bind, accept, and serve associations.
+async fn run_server(cfg: &config::SimConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let model = build_model(cfg).map_err(|e| e.to_string())?;
 
     // Bind. The address comes from the config `ip` field (default 0.0.0.0 =
     // all interfaces); port 102 may need elevation on some OSes, and a CLI
