@@ -193,6 +193,26 @@ impl Presentation {
         Ok((ctx, payload))
     }
 
+    /// Extract the calling presentation selector (PSEL) from a Connect-PDU
+    /// content, if present. `None` when the CP carries no selector.
+    ///
+    /// Best-effort read of the optional normal-mode component.
+    pub fn calling_selector(cp: &[u8]) -> Option<Vec<u8>> {
+        let nm = read_normal_mode(cp).ok()?;
+        let mut r = BerReader::new(nm);
+        let mut sel: Option<Vec<u8>> = None;
+        while !r.done() {
+            let (tag, content) = match r.read_tlv() {
+                Ok(x) => x,
+                Err(_) => break,
+            };
+            if tag == TAG_CALLING_SEL {
+                sel = Some(content.to_vec());
+            }
+        }
+        sel
+    }
+
     /// Encode a CPA (CP Accept) PPDU accepting both contexts in `ctx` and
     /// carrying `acse_payload` (the ACSE AARE bytes).
     #[must_use]

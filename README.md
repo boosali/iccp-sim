@@ -272,6 +272,13 @@ OBJECT_CHANGE Information Report. An empty `values` list is rejected at startup.
   "transfer_set": "DSTransferSet1",
   "dataset": "DS1",
   "dataset_points": ["P1", "P2"],
+  "association": {
+    "ap_title": "1.2.3.4",
+    "ae_qualifier": 1,
+    "tsel": "0.0.0.1",
+    "ssel": "0.1",
+    "psel": "0.0.0.1"
+  },
   "run_for_secs": 300
 }
 ```
@@ -285,7 +292,33 @@ OBJECT_CHANGE Information Report. An empty `values` list is rejected at startup.
 | `client.transfer_set` | string | `Next_DSTransfer_Set` instance to claim (e.g. `DSTransferSet1`) |
 | `client.dataset` | string | Data set to arm on the transfer set (match the server's dataset) |
 | `client.dataset_points` | string[] | Data-set point members, in order — used to decode report values |
+| `client.association` | object | Association addressing (see below) |
 | `client.run_for_secs` | int | Release automatically after this many seconds (default 300) |
+
+### Association addressing (`client.association`)
+
+Controls the ACSE/COTP/SPSE identifiers the client sends during the handshake.
+**All fields are optional** — omit any (or the whole block) to keep the
+libIEC61850 default. The client is the MMS **caller**, so every field is part
+of the client's *own* identity as transmitted on the calling side: the AP title
+and AE qualifier in the AARQ, the TSEL as the CR's source TSAP, and the
+SSEL/PSEL as the CN/CP calling selectors. A server (or peer) observing the
+association sees exactly these values:
+
+| Field | Type | Sent as (calling side) | Default (if omitted) |
+|---|---|---|---|
+| `ap_title` | string | calling AP title (OID) | *unset* |
+| `ae_qualifier` | int | calling AE qualifier | *unset* |
+| `tsel` | string / byte[] | CR source TSAP | `[0,1]` |
+| `ssel` | string / byte[] | CN calling selector | `[0,1]` |
+| `psel` | string / byte[] | CP calling selector | `[0,0,0,1]` |
+
+`tsel`/`ssel`/`psel` accept a dotted-decimal string (`"0.0.0.1"`) or a byte
+array (`[0,0,0,1]`).
+
+When running in server mode, each accepted client is logged with the identity
+it presented (AP title, AE qualifier, TSEL, SSEL, PSEL). A value the client did
+not send is shown as `-`.
 
 ---
 

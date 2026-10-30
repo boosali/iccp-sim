@@ -125,6 +125,29 @@ pub enum MmsInput {
     Tick,
 }
 
+/// The peer's OSI/ACSE identity as observed during the association handshake.
+///
+/// On the **server** this is the calling client's identity, decoded from the
+/// inbound handshake PDUs: the COTP CR (TSEL), the SPSE CN (SSEL), the SPSE CP
+/// (PSEL) and the ACSE AARQ (AP title + AE qualifier). On the **client** the
+/// peer is the called server, whose identity is not carried in the AARE, so
+/// every field is `None`.
+///
+/// All fields are `Option` because the wire allows any of them to be absent.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AssociationInfo {
+    /// The peer's AP title (OID), if present in its AARQ.
+    pub ap_title: Option<ObjectIdentifier>,
+    /// The peer's AE qualifier, if present in its AARQ.
+    pub ae_qualifier: Option<i64>,
+    /// The peer's COTP transport selector (TSEL), from its CR.
+    pub tsel: Option<Vec<u8>>,
+    /// The peer's session selector (SSEL), from its CN.
+    pub ssel: Option<Vec<u8>>,
+    /// The peer's presentation selector (PSEL), from its CP.
+    pub psel: Option<Vec<u8>>,
+}
+
 /// Actions emitted by the state machine for the driver to perform.
 #[derive(Debug, PartialEq)]
 #[non_exhaustive]
@@ -134,8 +157,9 @@ pub enum MmsAction {
     SendBytes(Vec<u8>),
     /// An inbound MMS PDU for the upper layer.
     DeliverService(MmsPdu),
-    /// The association reached [`State::Associated`].
-    AssociationUp,
+    /// The association reached [`State::Associated`], with the observed peer
+    /// identity (see [`AssociationInfo`]).
+    AssociationUp(AssociationInfo),
     /// The state changed to the carried value.
     StateChanged(State),
     /// The connection should be torn down for the given reason.
@@ -189,6 +213,10 @@ pub struct MmsConnection {
     /// stores the response it sent (the negotiated outcome). Carries
     /// `local_detail` (max MMS PDU size) and `max_outstanding*` for the driver.
     negotiated: Option<InitiateResponse>,
+    /// The peer's observed OSI/ACSE identity, accumulated during the handshake
+    /// (TSEL from the CR; the rest from the CN/CP/AARQ). Empty on the client
+    /// side, where the peer's identity is not carried in the AARE.
+    peer_info: AssociationInfo,
     deadlines: Deadlines,
     actions: Vec<MmsAction>,
 }
@@ -205,6 +233,7 @@ impl MmsConnection {
             contexts: PresentationContexts::default(),
             next_invoke_id: 0,
             negotiated: None,
+            peer_info: AssociationInfo::default(),
             deadlines: Deadlines::default(),
             actions: Vec::new(),
         }
@@ -348,6 +377,9 @@ impl MmsConnection {
         self.deadlines.setup = Some(now + self.config.setup_timeout);
         let tpdu_size = negotiate_size(self.config.tpdu_size, conn.params.tpdu_size);
         self.config.tpdu_size = tpdu_size;
+        // Remember the calling client's TSEL (its src TSAP) for the
+        // `AssociationUp` identity.
+        self.peer_info.tsel = conn.params.src_tsap.clone();
         let cc = CotpPdu::ConnectionConfirm(ConnectionPdu {
             dst_ref: conn.src_ref,
             src_ref: LOCAL_SRC_REF,
@@ -460,11 +492,21 @@ impl MmsConnection {
         };
         self.contexts = ctx;
 
+        // Capture the calling client's session selector (SSEL) and presentation
+        // selector (PSEL) for the `AssociationUp` identity.
+        if !c.calling_selector.as_deref().unwrap_or(&[]).is_empty() {
+            self.peer_info.ssel = c.calling_selector.clone();
+        }
+        self.peer_info.psel = Presentation::calling_selector(&c.user_data);
+
         let aarq = match Acse::decode(&aarq_bytes) {
             Ok(AcsePdu::Aarq(a)) => a,
             Ok(_) => return self.fail(DisconnectReason::Protocol(Error::AcseInvalid)),
             Err(e) => return self.fail(DisconnectReason::Protocol(e)),
         };
+        // Capture the calling client's AP title and AE qualifier.
+        self.peer_info.ap_title = aarq.calling_ap_title;
+        self.peer_info.ae_qualifier = aarq.calling_ae_qualifier;
         // Verify the application-context is the MMS profile.
         if aarq.app_context != ObjectIdentifier::from_arcs(MMS_APP_CONTEXT_ARCS) {
             return self.fail(DisconnectReason::Protocol(Error::AcseInvalid));
@@ -515,7 +557,7 @@ impl MmsConnection {
                 self.negotiated = Some(init_resp);
                 self.deadlines.clear();
                 self.transition(State::Associated);
-                self.actions.push(MmsAction::AssociationUp);
+                self.actions.push(MmsAction::AssociationUp(self.peer_info.clone()));
             }
             Err(e) => self.fail(DisconnectReason::Protocol(e)),
         }
@@ -550,7 +592,9 @@ impl MmsConnection {
         self.negotiated = Some(init_resp);
         self.deadlines.clear();
         self.transition(State::Associated);
-        self.actions.push(MmsAction::AssociationUp);
+        // Client side: the called server's identity is not carried in the
+        // AARE, so the peer info stays empty here.
+        self.actions.push(MmsAction::AssociationUp(self.peer_info.clone()));
     }
 
     // -----------------------------------------------------------------
@@ -836,13 +880,13 @@ mod tests {
 
         // Server gets CN → AC, becomes Associated.
         let a = feed(&mut server, &cn, t);
-        assert!(a.contains(&MmsAction::AssociationUp));
+        assert!(a.iter().any(|x| matches!(x, MmsAction::AssociationUp(_))));
         assert_eq!(server.state(), State::Associated);
         let ac = take_send_bytes(&a);
 
         // Client gets AC → Associated.
         let a = feed(&mut client, &ac, t);
-        assert!(a.contains(&MmsAction::AssociationUp));
+        assert!(a.iter().any(|x| matches!(x, MmsAction::AssociationUp(_))));
         assert_eq!(client.state(), State::Associated);
     }
 

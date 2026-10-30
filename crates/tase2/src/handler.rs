@@ -9,7 +9,7 @@
 //! The library ships [`DefaultLoggingHandler`] which routes everything to the
 //! `tracing` crate at appropriate levels.
 
-use mms_proto::assoc::{DisconnectReason, State};
+use mms_proto::assoc::{AssociationInfo, DisconnectReason, State};
 use mms_proto::mms::MmsPdu;
 
 /// Trait implemented by types that want to observe connection events.
@@ -18,8 +18,10 @@ use mms_proto::mms::MmsPdu;
 /// requires `Send + Sync + 'static` so handlers can be shared across the
 /// driver task and the user-facing API.
 pub trait EventHandler: Send + Sync + 'static {
-    /// Called when the association reaches the data phase.
-    fn on_association_up(&self) {}
+    /// Called when the association reaches the data phase, with the observed
+    /// peer identity (the calling client on the server side; empty on the
+    /// client side, where the peer's identity is not carried in the AARE).
+    fn on_association_up(&self, _peer: &AssociationInfo) {}
 
     /// Called when the association state machine changes state.
     fn on_state_changed(&self, _state: State) {}
@@ -53,8 +55,16 @@ impl EventHandler for NoopHandler {}
 pub struct DefaultLoggingHandler;
 
 impl EventHandler for DefaultLoggingHandler {
-    fn on_association_up(&self) {
-        tracing::info!(target: "tase2::assoc", "association up");
+    fn on_association_up(&self, peer: &AssociationInfo) {
+        tracing::info!(
+            target: "tase2::assoc",
+            ap_title = %peer.ap_title.as_ref().map(|o| o.to_string()).unwrap_or_default(),
+            ae_qualifier = ?peer.ae_qualifier,
+            tsel = %fmt_bytes(peer.tsel.as_deref()),
+            ssel = %fmt_bytes(peer.ssel.as_deref()),
+            psel = %fmt_bytes(peer.psel.as_deref()),
+            "association up"
+        );
     }
     fn on_state_changed(&self, state: State) {
         tracing::info!(target: "tase2::state", ?state, "association state changed");
@@ -70,5 +80,14 @@ impl EventHandler for DefaultLoggingHandler {
     }
     fn on_protocol_error(&self, message: &str) {
         tracing::warn!(target: "tase2::error", "protocol error: {message}");
+    }
+}
+
+/// Format an optional byte selector as dotted decimal (`0.0.0.1`), or `-`
+/// when the value is absent or empty.
+fn fmt_bytes(b: Option<&[u8]>) -> String {
+    match b {
+        Some(s) if !s.is_empty() => s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("."),
+        _ => "-".to_string(),
     }
 }

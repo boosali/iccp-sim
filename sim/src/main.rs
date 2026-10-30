@@ -127,7 +127,18 @@ async fn run_server(cfg: &config::SimConfig) -> Result<(), Box<dyn std::error::E
             }
         };
         let peer = conn.peer_addr();
-        tracing::info!(%peer, "association up; serving");
+        // Log the connecting client's OSI/ACSE identity (decoded from the
+        // handshake). Fields that the peer did not send render as "-".
+        let info = conn.association_info();
+        tracing::info!(
+            %peer,
+            ap_title = %info.ap_title.as_ref().map(|o| o.to_string()).unwrap_or_else(|| "-".into()),
+            ae_qualifier = ?info.ae_qualifier,
+            tsel = %sel_str(info.tsel.as_deref()),
+            ssel = %sel_str(info.ssel.as_deref()),
+            psel = %sel_str(info.psel.as_deref()),
+            "client associated; serving"
+        );
 
         let provider = provider.clone();
         let manager = manager.clone();
@@ -192,4 +203,12 @@ fn domain_point_name(model: &SimModel, item: &str) -> Option<ObjectName> {
     let domain = Identifier::new(&model.domain).ok()?;
     let item = Identifier::new(item).ok()?;
     Some(ObjectName::DomainSpecific { domain, item })
+}
+
+/// Render an optional byte selector as dotted decimal, or "-" when absent.
+fn sel_str(b: Option<&[u8]>) -> String {
+    match b {
+        Some(s) if !s.is_empty() => s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("."),
+        _ => "-".into(),
+    }
 }

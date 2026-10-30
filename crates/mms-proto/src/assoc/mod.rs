@@ -17,4 +17,6 @@ pub mod state;
 mod timers;
 
 pub use config::AssocConfig;
-pub use state::{AssocStage, DisconnectReason, MmsAction, MmsConnection, MmsInput, Role, State};
+pub use state::{
+    AssocStage, AssociationInfo, DisconnectReason, MmsAction, MmsConnection, MmsInput, Role, State,
+};

@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use mms_proto::assoc::{AssocConfig, DisconnectReason, Role};
+use mms_proto::assoc::{AssociationInfo, AssocConfig, DisconnectReason, Role};
 use mms_proto::mms::{
     ConfirmedServiceRequest, ConfirmedServiceResponse, MmsPdu, ServiceError, UnconfirmedService,
 };
@@ -73,6 +73,7 @@ impl Tase2Server {
 #[derive(Debug)]
 pub struct ServerConnection {
     peer: SocketAddr,
+    peer_info: AssociationInfo,
     cmd_tx: mpsc::Sender<Command>,
     evt_rx: mpsc::Receiver<DriverEvent>,
     report_rx: mpsc::Receiver<MmsPdu>,
@@ -104,20 +105,22 @@ impl ServerConnection {
             false,
         ));
 
-        // Wait for the association to come up (or fail).
-        loop {
+        // Wait for the association to come up (or fail), capturing the peer
+        // identity from the `AssociationUp` event.
+        let peer_info = loop {
             match evt_rx.recv().await {
-                Some(DriverEvent::AssociationUp) => break,
+                Some(DriverEvent::AssociationUp(info)) => break info,
                 Some(DriverEvent::Closed(reason)) => {
                     return Err(Error::AssociationFailed(reason));
                 }
                 Some(DriverEvent::Service(_)) => continue,
                 None => return Err(Error::DriverGone),
             }
-        }
+        };
 
         Ok(Self {
             peer,
+            peer_info,
             cmd_tx,
             evt_rx,
             report_rx,
@@ -128,6 +131,13 @@ impl ServerConnection {
     /// The peer's address.
     pub fn peer_addr(&self) -> SocketAddr {
         self.peer
+    }
+
+    /// The connecting client's OSI/ACSE identity observed during the handshake
+    /// (AP title, AE qualifier, TSEL, SSEL, PSEL). See
+    /// [`AssociationInfo`] for which fields are populated.
+    pub fn association_info(&self) -> &AssociationInfo {
+        &self.peer_info
     }
 
     /// Receive the next inbound confirmed request as `(invoke_id, service)`.
@@ -150,7 +160,7 @@ impl ServerConnection {
                     );
                     continue;
                 }
-                DriverEvent::AssociationUp => continue,
+                DriverEvent::AssociationUp(_) => continue,
                 DriverEvent::Closed(_) => return None,
             }
         }

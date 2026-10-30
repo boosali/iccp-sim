@@ -15,7 +15,7 @@ use tase2::{
     names, object_name, DsTransferSet, DomainName, Identifier, ObjectName, Tase2Client, Transport,
 };
 
-use crate::config::{build_conditions, ClientCfg};
+use crate::config::{build_assoc_config, build_conditions, ClientCfg};
 
 /// The four ICCP control members, in wire order. Prepended to a data set's
 /// point members to form the full member list a report is decoded against.
@@ -36,8 +36,10 @@ pub async fn run(cfg: &ClientCfg) -> Result<(), String> {
         .map_err(|e| format!("bad peer_ip {:?}: {e}", cfg.peer_ip))?;
     let addr: SocketAddr = (ip, cfg.port).into();
 
+    let assoc = build_assoc_config(&cfg.association)
+        .map_err(|e| format!("bad association config: {e}"))?;
     let transport = Transport::tcp(addr);
-    let mut client = Tase2Client::connect(transport, mms_proto::assoc::AssocConfig::default())
+    let mut client = Tase2Client::connect(transport, assoc)
         .await
         .map_err(|e| format!("associate {addr} failed: {e}"))?;
     tracing::info!(%addr, "associated as TASE.2 client");

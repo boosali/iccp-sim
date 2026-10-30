@@ -13,3 +13,6 @@ categories = ["network-programming", "encoding", "parser-implementations"]
 [dependencies]
 bytes = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"

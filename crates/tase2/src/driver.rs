@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BytesMut};
 use mms_proto::assoc::{
-    AssocConfig, DisconnectReason, MmsAction, MmsConnection, MmsInput, Role, State,
+    AssocConfig, AssociationInfo, DisconnectReason, MmsAction, MmsConnection, MmsInput, Role, State,
 };
 use mms_proto::mms::MmsPdu;
 use mms_proto::tpkt::Tpkt;
@@ -80,8 +80,9 @@ pub(crate) enum Command {
 pub(crate) enum DriverEvent {
     /// An inbound confirmed-path MMS PDU for the upper layer.
     Service(MmsPdu),
-    /// The association reached the data phase.
-    AssociationUp,
+    /// The association reached the data phase, carrying the observed peer
+    /// identity (empty on the client side).
+    AssociationUp(AssociationInfo),
     /// The association was torn down for the given reason.
     Closed(DisconnectReason),
 }
@@ -253,9 +254,9 @@ where
                     keep_going = false;
                 }
             }
-            MmsAction::AssociationUp => {
-                handler.on_association_up();
-                if evt_tx.send(DriverEvent::AssociationUp).await.is_err() {
+            MmsAction::AssociationUp(info) => {
+                handler.on_association_up(&info);
+                if evt_tx.send(DriverEvent::AssociationUp(info)).await.is_err() {
                     keep_going = false;
                 }
             }

@@ -258,6 +258,9 @@ pub struct ClientCfg {
     pub dataset_points: Vec<String>,
     /// The DS-transfer-set attributes the client writes to arm reporting.
     pub transfer_set: TransferSetCfg,
+    /// Association addressing (AP title / AE qualifier / TSEL / SSEL / PSEL).
+    /// Absent (or left empty) keeps the libIEC61850 defaults.
+    pub association: AssocCfg,
     /// Seconds the client stays associated before concluding (0 = run
     /// indefinitely until the peer drops the association).
     pub run_for_secs: u64,
@@ -272,9 +275,36 @@ impl Default for ClientCfg {
             dataset: String::new(),
             dataset_points: Vec::new(),
             transfer_set: TransferSetCfg::default(),
+            association: AssocCfg::default(),
             run_for_secs: 0,
         }
     }
+}
+
+/// Client association addressing. Every field is optional; an empty value
+/// keeps the corresponding libIEC61850 default from
+/// [`mms_proto::assoc::AssocConfig::default`], so an empty block is a no-op.
+///
+/// Roles: the client is the MMS **caller**, so `ap_title`/`ae_qualifier` are
+/// the *client's own* ACSE identity, while `tsel`/`ssel`/`psel` address the
+/// *called* peer (the server it connects to).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssocCfg {
+    /// The client's AP title, as dotted OID arcs (e.g. `"1.2.3.4"`).
+    pub ap_title: Option<String>,
+    /// The client's AE qualifier (signed integer).
+    pub ae_qualifier: Option<i64>,
+    /// COTP TSAP of the called peer (TSEL). A dotted-decimal string
+    /// (`"0.0.0.1"`) or a byte array (`[0,0,0,1]`).
+    #[serde(default, deserialize_with = "de_optional_bytes")]
+    pub tsel: Option<Vec<u8>>,
+    /// Called peer session selector (SSEL). A dotted-decimal string or a byte array.
+    #[serde(default, deserialize_with = "de_optional_bytes")]
+    pub ssel: Option<Vec<u8>>,
+    /// Called peer presentation selector (PSEL). A dotted-decimal string or a byte array.
+    #[serde(default, deserialize_with = "de_optional_bytes")]
+    pub psel: Option<Vec<u8>>,
 }
 
 /// DS-transfer-set attributes the client writes (`Next_DSTransfer_Set` claim
@@ -322,6 +352,44 @@ where
 {
     let s = String::deserialize(deserializer)?;
     parse_point_kind(&s).ok_or_else(|| de::Error::custom(format!("unknown point kind {s:?}")))
+}
+
+/// Decode an optional byte selector from either a dotted-decimal string
+/// (`"0.0.0.1"`) or a JSON byte array (`[0, 0, 0, 1]`). An empty string decodes
+/// to `None` so `{"tsel": ""}` behaves like leaving the field out (use the
+/// libIEC61850 default).
+fn de_optional_bytes<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BytesInput {
+        Str(String),
+        Array(Vec<u8>),
+    }
+    match BytesInput::deserialize(deserializer)? {
+        BytesInput::Str(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return Ok(None);
+            }
+            s.split('.')
+                .map(|part| {
+                    u8::from_str_radix(part.trim(), 10)
+                        .map_err(|e| de::Error::custom(format!("bad selector byte {part:?}: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some)
+        }
+        BytesInput::Array(bytes) => {
+            if bytes.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(bytes))
+            }
+        }
+    }
 }
 
 /// Parse a TASE.2 point kind name: `"{family}[_{suffixes…}]"` where family is
@@ -467,6 +535,53 @@ pub fn build_conditions(names: &[String]) -> Result<tase2_proto::transfer_set::D
         mask.insert(bit);
     }
     Ok(mask)
+}
+
+/// Build the MMS [`AssocConfig`] for the client from an [`AssocCfg`].
+///
+/// Every `None`/empty field keeps the libIEC61850 default from
+/// `AssocConfig::default()` (unchanged out-of-the-box behavior). The client is
+/// the MMS caller, so `ap_title`/`ae_qualifier` become the *local* (calling)
+/// ACSE identity, while `tsel`/`ssel`/`psel` become the *remote* (called-peer)
+/// selectors.
+pub fn build_assoc_config(
+    assoc: &AssocCfg,
+) -> Result<mms_proto::assoc::AssocConfig, SimError> {
+    let mut cfg = mms_proto::assoc::AssocConfig::default();
+    if let Some(ap) = &assoc.ap_title {
+        let ap = ap.trim();
+        if !ap.is_empty() {
+            let arcs: Vec<u32> = ap
+                .split('.')
+                .map(|part| {
+                    u32::from_str_radix(part.trim(), 10)
+                        .map_err(|e| SimError::Config(format!("bad AP title arc {part:?}: {e}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            cfg.local_ap_title =
+                Some(mms_proto::ber::ObjectIdentifier::from_arcs(&arcs));
+        }
+    }
+    if let Some(q) = assoc.ae_qualifier {
+        cfg.local_ae_qualifier = Some(q);
+    }
+    // The client's own identity is what it transmits as the *calling* side of
+    // the handshake: the TSEL as the CR's src-TSAP, the SSEL/PSEL as the CN's
+    // calling selector and the CP's calling selector. The AP title and AE
+    // qualifier are likewise the calling values in the AARQ. A server (or peer)
+    // observes exactly these, so they map to the `local_*` fields — the
+    // `remote_*` fields name the called side and do not affect what the client
+    // sends.
+    if let Some(t) = &assoc.tsel {
+        cfg.local_tsap = t.clone();
+    }
+    if let Some(s) = &assoc.ssel {
+        cfg.local_ssel = Some(s.clone());
+    }
+    if let Some(p) = &assoc.psel {
+        cfg.local_psel = Some(p.clone());
+    }
+    Ok(cfg)
 }
 
 /// Seconds since the Unix epoch (for default timestamps).

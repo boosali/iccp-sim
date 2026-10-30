@@ -93,7 +93,7 @@ impl Tase2Client {
         // Wait for the association to come up (or fail).
         loop {
             match evt_rx.recv().await {
-                Some(DriverEvent::AssociationUp) => break,
+                Some(DriverEvent::AssociationUp(_)) => break,
                 Some(DriverEvent::Closed(reason)) => {
                     return Err(Error::AssociationFailed(reason));
                 }
@@ -173,7 +173,7 @@ impl Tase2Client {
                         );
                     }
                 },
-                Some(DriverEvent::AssociationUp) => {}
+                Some(DriverEvent::AssociationUp(_)) => {}
                 Some(DriverEvent::Closed(reason)) => {
                     return Err(Error::AssociationFailed(reason));
                 }
