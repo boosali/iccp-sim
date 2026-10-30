@@ -1,13 +1,27 @@
-# iccp-sim — ICCP / TASE.2 Server Simulator
+# iccp-sim — ICCP / TASE.2 Simulator
 
-A lightweight, config-driven **ICCP server simulator** (the *called* role) built on
+A lightweight, config-driven **ICCP/TASE.2 simulator** built on
 [vendored copies](crates/) of the protocol crates from
 [janfietz/telcon-tase2](https://github.com/janfietz/telcon-tase2) (MIT OR Apache-2.0).
 
-Its purpose is **interoperability testing**: point a real ICCP/TASE.2 client
-(e.g. OpenICCP) at this simulator and exercise association, name enumeration,
-`TASE2_Version` / `Supported_Features` discovery, point reads, data-set transfer
-sets, and condition-monitoring (COV) reports — without any real IED attached.
+> **Intended for sandbox / test use only.** `iccp-sim` is an interop-testing
+> tool — it has no security hardening, authentication, TLS, or production
+> reliability guarantees. Do not deploy it as a production IED or in a
+> control network.
+
+It runs in two roles, selected by the `mode` field:
+
+- **`server`** (default) — the *called* role: point a real ICCP/TASE.2 client
+  (e.g. OpenICCP) at it and exercise association, name enumeration,
+  `TASE2_Version` / `Supported_Features` discovery, point reads, data-set
+  transfer sets, and condition-monitoring (COV) reports — without any real
+  IED attached.
+- **`client`** — the *calling* role: connect to a real TASE.2 server (or this
+  project's own server) and log the association and every COV report.
+
+Everything the peer sees (domain, Bilateral Table, version, features, points,
+datasets, report traffic) is driven by a **JSON config file** — no recompile
+needed to change the simulated plant.
 
 Everything the client sees (domain, Bilateral Table, version, features, points,
 datasets, report traffic) is driven by a **JSON config file** — no recompile
@@ -104,15 +118,39 @@ cargo build --offline
 iccp-sim -c config.json
 iccp-sim --config config.json --port 2404      # override port from config
 iccp-sim config.json                           # bare positional also works
+iccp-sim --self-test                           # functional self-test (no config)
 ```
 
 | Option | Meaning |
 |---|---|
-| `-c`, `--config <file>` | JSON config (required unless a bare positional path is given) |
+| `-c`, `--config <file>` | JSON config (required unless `--self-test` or a bare positional path is given) |
 | `--port <port>` | Override the `port` field in the config |
+| `--self-test` | Run the built-in functional self-test (see below) and exit |
 
 Logging goes to stderr via `tracing`; set `RUST_LOG` to tune verbosity
 (default `info`), e.g. `RUST_LOG=debug iccp-sim -c config.json`.
+
+### Built-in functional self-test (`--self-test`)
+
+`iccp-sim --self-test` drives the simulator against **itself** over the real
+protocol stack: it binds a local server on an ephemeral `127.0.0.1` port,
+connects a local client to it, and walks the full client-side flow — COTP/ACSE
+association, MMS initiate, `TASE2_Version` / `Supported_Features` reads
+(including the check that `device_control` is *not* advertised by default),
+`Bilateral_Table_ID`, point/dataset enumeration, a point read, a DS transfer-set
+claim + arm, and reception of at least one decoded COV report — then releases
+gracefully and confirms the server observed the client's configured identity
+(AP title, AE qualifier, TSEL/SSEL/PSEL). It needs no config file, no external
+host, and no privileged port. Each stage prints `PASS` / `FAIL`; a `SKIP` is
+used (never a fake `PASS`) for anything the public protocol API can't verify.
+Any `FAIL` exits with a non-zero status.
+
+```powershell
+cargo run -p iccp-sim -- --self-test
+# ICCP-SIM SELF TEST
+# ...
+# RESULT: PASS
+```
 
 ### Starting an OpenICCP client against it
 
@@ -208,7 +246,7 @@ placeholders — set them to match your test setup.
 | `port` | int | `102` | TCP port (port 102 may need elevation/admin on some OSes; use another if not) |
 | `bilateral_table_id` | string | `"BLT1"` | Identifier served as `Bilateral_Table_ID` |
 | `tase2_version.major` / `.minor` | int | `1` / `0` | `TASE2_Version` served to the client |
-| `supported_features` | string[] | all four | Any of: `"ds_transfer"`, `"cov"`, `"device_control"`, `"bilateral_access"` |
+| `supported_features` | string[] | `ds_transfer`, `cov`, `bilateral_access` | Any of: `"ds_transfer"`, `"cov"`, `"device_control"`, `"bilateral_access"`. `device_control` is **not** on by default: no `ControlHandler` is wired into the default serve path, so advertising it would lie about capability. Add it explicitly only once functional device control is in place |
 | `access.domain_read` | bool | `true` | All domain points readable |
 | `access.domain_read_write` | bool | `false` | All domain points writable |
 | `access.dataset_ops` | bool | `true` | Allow CREATE/DELETE data-set operations |
@@ -269,15 +307,23 @@ OBJECT_CHANGE Information Report. An empty `values` list is rejected at startup.
   "peer_ip": "127.0.0.1",
   "port": 102,
   "domain": "ICC1",
-  "transfer_set": "DSTransferSet1",
   "dataset": "DS1",
   "dataset_points": ["P1", "P2"],
   "association": {
-    "ap_title": "1.2.3.4",
-    "ae_qualifier": 1,
-    "tsel": "0.0.0.1",
-    "ssel": "0.1",
-    "psel": "0.0.0.1"
+    "local": {
+      "ap_title": "1.2.3.4",
+      "ae_qualifier": 1,
+      "tsel": "0.0.0.1",
+      "ssel": "0.1",
+      "psel": "0.0.0.1"
+    },
+    "remote": {
+      "ap_title": "1.2.3.99",
+      "ae_qualifier": 2,
+      "tsel": "0.0.0.17",
+      "ssel": "0.17",
+      "psel": "0.0.0.17"
+    }
   },
   "run_for_secs": 300
 }
@@ -289,36 +335,82 @@ OBJECT_CHANGE Information Report. An empty `values` list is rejected at startup.
 | `client.peer_ip` | string | Server IP to connect to |
 | `client.port` | int | Server TCP port |
 | `client.domain` | string | MMS domain to associate (match the server's `domain`) |
-| `client.transfer_set` | string | `Next_DSTransfer_Set` instance to claim (e.g. `DSTransferSet1`) |
 | `client.dataset` | string | Data set to arm on the transfer set (match the server's dataset) |
 | `client.dataset_points` | string[] | Data-set point members, in order — used to decode report values |
-| `client.association` | object | Association addressing (see below) |
+| `client.association` | object | Association addressing: nested `local` + `remote` (see below) |
 | `client.run_for_secs` | int | Release automatically after this many seconds (default 300) |
 
-### Association addressing (`client.association`)
+### Association addressing (`client.association` / `association`)
 
-Controls the ACSE/COTP/SPSE identifiers the client sends during the handshake.
-**All fields are optional** — omit any (or the whole block) to keep the
-libIEC61850 default. The client is the MMS **caller**, so every field is part
-of the client's *own* identity as transmitted on the calling side: the AP title
-and AE qualifier in the AARQ, the TSEL as the CR's source TSAP, and the
-SSEL/PSEL as the CN/CP calling selectors. A server (or peer) observing the
-association sees exactly these values:
+Both roles carry an `association` block (top-level `association` in server
+mode, `client.association` in client mode). It is **split into two sides** so
+it is always explicit which side of the link each identifier belongs to:
 
-| Field | Type | Sent as (calling side) | Default (if omitted) |
-|---|---|---|---|
-| `ap_title` | string | calling AP title (OID) | *unset* |
-| `ae_qualifier` | int | calling AE qualifier | *unset* |
-| `tsel` | string / byte[] | CR source TSAP | `[0,1]` |
-| `ssel` | string / byte[] | CN calling selector | `[0,1]` |
-| `psel` | string / byte[] | CP calling selector | `[0,0,0,1]` |
+- **`local`** — *this process* (the `iccp-sim` you are running). This is the
+  identity the peer observes and, for the server, is what it reports in its
+  "client associated" log line.
+- **`remote`** — *the ICCP peer* (the other end). On the client these are the
+  values the client sends as the called/calling-side context of the handshake;
+  on the server they document the expected caller (the protocol stack does
+  **not** validate the caller's identity against them — they are
+  informational).
+
+Every field in each side is optional; an empty/absent value keeps the
+corresponding default from `mms_proto::AssocConfig::default`, so an empty
+block is a no-op. The same five identifiers appear on each side, one per OSI
+layer:
+
+| Field | OSI layer | Meaning |
+|---|---|---|
+| `tsel` | transport (COTP) | TSAP — transport service access point. Dotted-decimal string or byte array |
+| `ssel` | session | session selector. Dotted-decimal string or byte array |
+| `psel` | presentation | presentation selector. Dotted-decimal string or byte array |
+| `ae_qualifier` | ACSE | application-entity qualifier (signed integer) |
+| `ap_title` | ACSE | application-process title (dotted OID arcs, e.g. `"1.2.3.4"`) |
 
 `tsel`/`ssel`/`psel` accept a dotted-decimal string (`"0.0.0.1"`) or a byte
-array (`[0,0,0,1]`).
+array (`[0,0,0,1]`). Defaults when a field is omitted: `tsel` `[0,1]`, `ssel`
+`[0,1]`, `psel` `[0,0,0,1]`, `ae_qualifier`/`ap_title` unset.
+
+> **Wire direction note:** the exact byte values above are placeholders. The
+> simulator does not assume a Monarch-specific hex-vs-decimal convention for
+> selectors — set `local` to whatever your real client presents (visible in
+> the server's association log) and `remote` to what the peer expects.
 
 When running in server mode, each accepted client is logged with the identity
-it presented (AP title, AE qualifier, TSEL, SSEL, PSEL). A value the client did
-not send is shown as `-`.
+it presented (AP title, AE qualifier, TSEL, SSEL, PSEL), taken from the
+client's **`local`** side. A value the client did not send is shown as `-`.
+
+### Example server association (`association`)
+
+The server-mode `association` block (top-level) works the same way. Here is
+the server side of the example pair — its `local` is the server's own identity,
+and its `remote` mirrors the example client's `local` so the pair is
+internally consistent (the example client reaches the example server by
+changing only IP/port):
+
+```json
+"association": {
+  "local": {
+    "ap_title": "1.2.3.99",
+    "ae_qualifier": 2,
+    "tsel": "0.0.0.17",
+    "ssel": "0.17",
+    "psel": "0.0.0.17"
+  },
+  "remote": {
+    "ap_title": "1.2.3.4",
+    "ae_qualifier": 1,
+    "tsel": "0.0.0.1",
+    "ssel": "0.1",
+    "psel": "0.0.0.1"
+  }
+}
+```
+
+Full ready-to-run examples:
+[`config.client.example.json`](config.client.example.json) and
+[`config.server.example.json`](config.server.example.json).
 
 ---
 

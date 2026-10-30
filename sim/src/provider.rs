@@ -7,16 +7,18 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use mms_proto::ber::BitString;
 use mms_proto::mms::{Data, Identifier, ObjectName};
-use tokio::sync::RwLock;
-use tase2_proto::{DataSet, DomainName, PointKind, PointValue};
 use tase2::{data_access_error, names, DataProvider};
+use tase2_proto::{DataSet, DomainName, PointKind, PointValue};
+use tokio::sync::RwLock;
 
 /// Hashable key for an [`ObjectName`] (same scheme as the upstream
 /// `MapDataProvider`): `"@item"` (VMD), `"domain/item"` (domain), `"~item"` (AA).
 pub fn object_key(name: &ObjectName) -> String {
     match name {
         ObjectName::VmdSpecific(id) => format!("@{}", id.as_str()),
-        ObjectName::DomainSpecific { domain, item } => format!("{}/{}", domain.as_str(), item.as_str()),
+        ObjectName::DomainSpecific { domain, item } => {
+            format!("{}/{}", domain.as_str(), item.as_str())
+        }
         ObjectName::AaSpecific(id) => format!("~{}", id.as_str()),
         other => format!("?{other:?}"),
     }
@@ -175,7 +177,12 @@ impl DataProvider for SimProvider {
     }
 
     async fn data_set(&self, name: &ObjectName) -> Option<DataSet> {
-        self.inner.read().await.data_sets.get(&object_key(name)).cloned()
+        self.inner
+            .read()
+            .await
+            .data_sets
+            .get(&object_key(name))
+            .cloned()
     }
 
     /// Serve `TASE2_Version` and `Supported_Features` in their raw MMS shapes.

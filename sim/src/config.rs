@@ -13,7 +13,7 @@ use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 use tase2::{
-    object_name, names, AccessRights, BilateralTable, DataSet, DomainName, Identifier, ObjectName,
+    names, object_name, AccessRights, BilateralTable, DataSet, DomainName, Identifier, ObjectName,
     PointKind, PointValue, Quality, StateValue, TimeStamp,
 };
 
@@ -34,12 +34,11 @@ pub enum Feature {
 }
 
 impl Feature {
-    const ALL: [Feature; 4] = [
-        Feature::DsTransfer,
-        Feature::Cov,
-        Feature::DeviceControl,
-        Feature::BilateralAccess,
-    ];
+    /// Features advertised by default. Device Control is deliberately
+    /// excluded: no `ControlHandler` is wired into the default serving path,
+    /// so advertising it would lie about capability. Enable `device_control`
+    /// explicitly in a config once functional device control is in place.
+    const DEFAULT: [Feature; 3] = [Feature::DsTransfer, Feature::Cov, Feature::BilateralAccess];
 
     /// The MSB-first bit position used when building the `Supported_Features`
     /// bit string. libtase2 client code tests these as:
@@ -84,6 +83,11 @@ pub struct SimConfig {
     pub tase2_version: Tase2VersionCfg,
     /// Which `Supported_Features` bits are set.
     pub supported_features: Vec<Feature>,
+    /// Server-mode (called role) association addressing: this server's own
+    /// OSI/ACSE identity and its expectation of the calling peer. Only used
+    /// when `mode == "server"`; the client's own association lives in
+    /// `client.association`.
+    pub association: AssocCfg,
     /// Access grants, applied to the Bilateral Table.
     pub access: AccessCfg,
     /// Indication points to serve.
@@ -107,7 +111,8 @@ impl Default for SimConfig {
             port: 102,
             bilateral_table_id: "BLT1".into(),
             tase2_version: Tase2VersionCfg::default(),
-            supported_features: Feature::ALL.to_vec(),
+            supported_features: Feature::DEFAULT.to_vec(),
+            association: AssocCfg::default(),
             access: AccessCfg::default(),
             points: vec![],
             datasets: vec![],
@@ -197,18 +202,12 @@ pub struct DsCfg {
 /// Self-mutation loop: every `interval_secs`, each listed point advances to
 /// its next `values` entry (wrapping). Drives OBJECT_CHANGE reports so a
 /// client's transfer set produces traffic without any external input.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct MutationCfg {
     /// Seconds between steps; 0 (default) disables mutation.
     pub interval_secs: u64,
     pub points: Vec<MutationPointCfg>,
-}
-
-impl Default for MutationCfg {
-    fn default() -> Self {
-        Self { interval_secs: 0, points: vec![] }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -258,8 +257,9 @@ pub struct ClientCfg {
     pub dataset_points: Vec<String>,
     /// The DS-transfer-set attributes the client writes to arm reporting.
     pub transfer_set: TransferSetCfg,
-    /// Association addressing (AP title / AE qualifier / TSEL / SSEL / PSEL).
-    /// Absent (or left empty) keeps the libIEC61850 defaults.
+    /// Association addressing (AP title / AE qualifier / TSEL / SSEL / PSEL),
+    /// split into `local` (this client) and `remote` (the peer it connects
+    /// to). Absent (or left empty) keeps the libIEC61850 defaults.
     pub association: AssocCfg,
     /// Seconds the client stays associated before concluding (0 = run
     /// indefinitely until the peer drops the association).
@@ -281,41 +281,61 @@ impl Default for ClientCfg {
     }
 }
 
-/// Client association addressing. Every field is optional; an empty value
-/// keeps the corresponding libIEC61850 default from
+/// Association addressing, explicit about which side of the link each value
+/// belongs to. `local` is this process (the client or server running
+/// `iccp-sim`); `remote` is the ICCP peer. Every field is optional; an
+/// empty/absent value keeps the corresponding libIEC61850 default from
 /// [`mms_proto::assoc::AssocConfig::default`], so an empty block is a no-op.
 ///
-/// Roles: the client is the MMS **caller**, so `ap_title`/`ae_qualifier` are
-/// the *client's own* ACSE identity, while `tsel`/`ssel`/`psel` address the
-/// *called* peer (the server it connects to).
+/// The five identifiers, from transport to application layer:
+///
+/// * **TSEL** (COTP TSAP) — transport-layer service access point
+/// * **SSEL** (session selector) — OSI session layer
+/// * **PSEL** (presentation selector) — OSI presentation layer
+/// * **AE qualifier** — ACSE application-entity qualifier
+/// * **AP title** — ACSE application-process title (dotted OID arcs)
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssocCfg {
-    /// The client's AP title, as dotted OID arcs (e.g. `"1.2.3.4"`).
+    /// This process's association identity (what the peer sees as the caller
+    /// or the responder, respectively).
+    pub local: SideAssocCfg,
+    /// The peer's association identity. On the client these are the values
+    /// the client sends as the called/calling-side context of the handshake;
+    /// on the server they document the expected caller (the stack does not
+    /// validate the caller's identity against them).
+    pub remote: SideAssocCfg,
+}
+
+/// One side (local or remote) of the association identity.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SideAssocCfg {
+    /// AP title, as dotted OID arcs (e.g. `"1.2.3.4"`).
     pub ap_title: Option<String>,
-    /// The client's AE qualifier (signed integer).
+    /// AE qualifier (signed integer).
     pub ae_qualifier: Option<i64>,
-    /// COTP TSAP of the called peer (TSEL). A dotted-decimal string
-    /// (`"0.0.0.1"`) or a byte array (`[0,0,0,1]`).
+    /// COTP TSAP (TSEL). A dotted-decimal string (`"0.0.0.1"`) or a byte
+    /// array (`[0,0,0,1]`).
     #[serde(default, deserialize_with = "de_optional_bytes")]
     pub tsel: Option<Vec<u8>>,
-    /// Called peer session selector (SSEL). A dotted-decimal string or a byte array.
+    /// Session selector (SSEL). A dotted-decimal string or a byte array.
     #[serde(default, deserialize_with = "de_optional_bytes")]
     pub ssel: Option<Vec<u8>>,
-    /// Called peer presentation selector (PSEL). A dotted-decimal string or a byte array.
+    /// Presentation selector (PSEL). A dotted-decimal string or a byte array.
     #[serde(default, deserialize_with = "de_optional_bytes")]
     pub psel: Option<Vec<u8>>,
 }
 
 /// DS-transfer-set attributes the client writes (`Next_DSTransfer_Set` claim
-/// + attribute write) to arm condition monitoring. `status` is forced `true`
-/// when arming; the remaining fields control which trigger conditions fire and
-/// how.
+/// then attribute write) to arm condition monitoring. `status` is forced
+/// `true` when arming; the remaining fields control which trigger conditions
+/// fire and how.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TransferSetCfg {
-    /// Trigger condition names: `interval_timeout`, `integrity_timeout`,
-    /// `object_change`, `operator_request`, `external_event`.
+    /// Trigger condition names (`interval_timeout`, `integrity_timeout`,
+    /// `object_change`, `operator_request`, `external_event`).
     pub conditions: Vec<String>,
     /// `Interval` in seconds (drives `interval_timeout`).
     pub interval: i32,
@@ -376,7 +396,8 @@ where
             }
             s.split('.')
                 .map(|part| {
-                    u8::from_str_radix(part.trim(), 10)
+                    part.trim()
+                        .parse::<u8>()
                         .map_err(|e| de::Error::custom(format!("bad selector byte {part:?}: {e}")))
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -403,11 +424,10 @@ pub fn parse_point_kind(s: &str) -> Option<PointKind> {
     } else if let Some(r) = rest.strip_prefix("discrete") {
         rest = r;
         PointKind::Discrete
-    } else if let Some(r) = rest.strip_prefix("state") {
+    } else {
+        let r = rest.strip_prefix("state")?;
         rest = r;
         PointKind::State
-    } else {
-        return None;
     };
     Some(match rest {
         "" => base,
@@ -449,9 +469,22 @@ fn next_in_family(kind: PointKind, tier: u8) -> PointKind {
     }
 }
 
+/// Short human description of a raw JSON value for error messages.
+fn describe_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => format!("\"{s}\""),
+        other => other.to_string(),
+    }
+}
+
 /// Build a `PointValue` from a JSON scalar, matching `kind`. Quality is
 /// default (valid/telemetered), timestamp is "now", COV is 0 — good enough
 /// for a simulator; the mutation loop overwrites the value on each step.
+///
+/// Every configured value is validated strictly: a value that does not fit
+/// the point kind is a configuration error, never silently coerced to a
+/// default (an invalid discrete value must not become 0, since a bad test
+/// config would then look like valid ICCP behavior).
 pub fn initial_value(kind: PointKind, raw: &serde_json::Value) -> Result<PointValue, SimError> {
     let q = Quality::default();
     let ts = TimeStamp::from_seconds(now_secs());
@@ -459,11 +492,19 @@ pub fn initial_value(kind: PointKind, raw: &serde_json::Value) -> Result<PointVa
         raw.as_f64()
             .ok_or_else(|| SimError::Config("real point needs a numeric value".into()))
     };
-    let discrete = |raw: &serde_json::Value| -> i32 {
-        raw.as_i64()
-            .or_else(|| raw.as_u64().map(|v| v as i64))
-            .and_then(|v| i32::try_from(v).ok())
-            .unwrap_or(0)
+    let discrete = |raw: &serde_json::Value| -> Result<i32, SimError> {
+        let v = raw
+            .as_i64()
+            .or_else(|| raw.as_u64().and_then(|v| i64::try_from(v).ok()));
+        match v {
+            Some(n) => i32::try_from(n).map_err(|e| {
+                SimError::Config(format!("invalid discrete value {n} (out of range): {e}"))
+            }),
+            None => Err(SimError::Config(format!(
+                "invalid discrete value {}",
+                describe_value(raw)
+            ))),
+        }
     };
     let state = |raw: &serde_json::Value| -> Result<StateValue, SimError> {
         if let Some(s) = raw.as_str() {
@@ -484,31 +525,78 @@ pub fn initial_value(kind: PointKind, raw: &serde_json::Value) -> Result<PointVa
 
     Ok(match kind {
         PointKind::Real => PointValue::Real(real(raw)? as f32),
-        PointKind::Discrete => PointValue::Discrete(discrete(raw)),
+        PointKind::Discrete => PointValue::Discrete(discrete(raw)?),
         PointKind::State => PointValue::State(state(raw)?),
 
-        PointKind::RealQ => PointValue::RealQ { value: real(raw)? as f32, quality: q },
-        PointKind::DiscreteQ => PointValue::DiscreteQ { value: discrete(raw), quality: q },
-        PointKind::StateQ => PointValue::StateQ { value: state(raw)?, quality: q },
+        PointKind::RealQ => PointValue::RealQ {
+            value: real(raw)? as f32,
+            quality: q,
+        },
+        PointKind::DiscreteQ => PointValue::DiscreteQ {
+            value: discrete(raw)?,
+            quality: q,
+        },
+        PointKind::StateQ => PointValue::StateQ {
+            value: state(raw)?,
+            quality: q,
+        },
 
-        PointKind::RealQTimeTag => PointValue::RealQTimeTag { value: real(raw)? as f32, quality: q, timestamp: ts },
-        PointKind::DiscreteQTimeTag => PointValue::DiscreteQTimeTag { value: discrete(raw), quality: q, timestamp: ts },
-        PointKind::StateQTimeTag => PointValue::StateQTimeTag { value: state(raw)?, quality: q, timestamp: ts },
+        PointKind::RealQTimeTag => PointValue::RealQTimeTag {
+            value: real(raw)? as f32,
+            quality: q,
+            timestamp: ts,
+        },
+        PointKind::DiscreteQTimeTag => PointValue::DiscreteQTimeTag {
+            value: discrete(raw)?,
+            quality: q,
+            timestamp: ts,
+        },
+        PointKind::StateQTimeTag => PointValue::StateQTimeTag {
+            value: state(raw)?,
+            quality: q,
+            timestamp: ts,
+        },
 
-        PointKind::RealExtended => PointValue::RealExtended { value: real(raw)? as f32, quality: q, timestamp: ts, cov: 0 },
-        PointKind::DiscreteExtended => PointValue::DiscreteExtended { value: discrete(raw), quality: q, timestamp: ts, cov: 0 },
-        PointKind::StateExtended => PointValue::StateExtended { value: state(raw)?, quality: q, timestamp: ts, cov: 0 },
+        PointKind::RealExtended => PointValue::RealExtended {
+            value: real(raw)? as f32,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
+        PointKind::DiscreteExtended => PointValue::DiscreteExtended {
+            value: discrete(raw)?,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
+        PointKind::StateExtended => PointValue::StateExtended {
+            value: state(raw)?,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
 
-        PointKind::RealQTimeTagExtended => PointValue::RealQTimeTagExtended { value: real(raw)? as f32, quality: q, timestamp: ts, cov: 0 },
-        PointKind::DiscreteQTimeTagExtended => PointValue::DiscreteQTimeTagExtended { value: discrete(raw), quality: q, timestamp: ts, cov: 0 },
-        PointKind::StateQTimeTagExtended => PointValue::StateQTimeTagExtended { value: state(raw)?, quality: q, timestamp: ts, cov: 0 },
+        PointKind::RealQTimeTagExtended => PointValue::RealQTimeTagExtended {
+            value: real(raw)? as f32,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
+        PointKind::DiscreteQTimeTagExtended => PointValue::DiscreteQTimeTagExtended {
+            value: discrete(raw)?,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
+        PointKind::StateQTimeTagExtended => PointValue::StateQTimeTagExtended {
+            value: state(raw)?,
+            quality: q,
+            timestamp: ts,
+            cov: 0,
+        },
 
         _ => return Err(SimError::Config("unsupported point kind".into())),
     })
-}
-
-fn value_for_kind(kind: PointKind, raw: &serde_json::Value) -> Option<PointValue> {
-    initial_value(kind, raw).ok()
 }
 
 /// Translate a config condition name to its [`DsConditions`] bit, or `None`
@@ -526,7 +614,9 @@ fn condition_from_str(s: &str) -> Option<tase2_proto::transfer_set::DsConditions
 }
 
 /// Build the requested [`DsConditions`] mask from a list of condition names.
-pub fn build_conditions(names: &[String]) -> Result<tase2_proto::transfer_set::DsConditions, SimError> {
+pub fn build_conditions(
+    names: &[String],
+) -> Result<tase2_proto::transfer_set::DsConditions, SimError> {
     let mut mask = tase2_proto::transfer_set::DsConditions::empty();
     for n in names {
         let Some(bit) = condition_from_str(n) else {
@@ -537,51 +627,79 @@ pub fn build_conditions(names: &[String]) -> Result<tase2_proto::transfer_set::D
     Ok(mask)
 }
 
-/// Build the MMS [`AssocConfig`] for the client from an [`AssocCfg`].
+/// Build the MMS [`AssocConfig`] from an [`AssocCfg`].
 ///
 /// Every `None`/empty field keeps the libIEC61850 default from
-/// `AssocConfig::default()` (unchanged out-of-the-box behavior). The client is
-/// the MMS caller, so `ap_title`/`ae_qualifier` become the *local* (calling)
-/// ACSE identity, while `tsel`/`ssel`/`psel` become the *remote* (called-peer)
-/// selectors.
-pub fn build_assoc_config(
-    assoc: &AssocCfg,
-) -> Result<mms_proto::assoc::AssocConfig, SimError> {
+/// `AssocConfig::default()` (unchanged out-of-the-box behavior). The mapping
+/// is side-by-side and the same for client and server roles:
+///
+/// * `local.*` → `local_*` fields (this process's identity). For the client
+///   these are exactly the values transmitted as the calling side of the
+///   handshake: TSEL as the CR's src-TSAP, SSEL/PSEL as the CN's calling
+///   selector and the CP's calling selector, AP title / AE qualifier as the
+///   calling values in the AARQ. For the server they are the selectors used
+///   in the CC/AC/AARE replies and echoed back to the caller.
+/// * `remote.*` → `remote_*` fields (the peer). For the client these name
+///   the called side of the handshake (CR dst-TSAP, called AP title/AE
+///   qualifier, called session/presentation selectors); for the server they
+///   document the expected caller. The stack does not validate the peer's
+///   identity against these values.
+pub fn build_assoc_config(assoc: &AssocCfg) -> Result<mms_proto::assoc::AssocConfig, SimError> {
     let mut cfg = mms_proto::assoc::AssocConfig::default();
-    if let Some(ap) = &assoc.ap_title {
-        let ap = ap.trim();
-        if !ap.is_empty() {
-            let arcs: Vec<u32> = ap
-                .split('.')
-                .map(|part| {
-                    u32::from_str_radix(part.trim(), 10)
-                        .map_err(|e| SimError::Config(format!("bad AP title arc {part:?}: {e}")))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            cfg.local_ap_title =
-                Some(mms_proto::ber::ObjectIdentifier::from_arcs(&arcs));
+    // Local side: this process's identity. An empty AP title keeps the
+    // libIEC61850 default (no AP title), matching the selector fields.
+    if let Some(ap) = &assoc.local.ap_title {
+        if !ap.trim().is_empty() {
+            cfg.local_ap_title = Some(parse_ap_title("local", ap)?);
         }
     }
-    if let Some(q) = assoc.ae_qualifier {
-        cfg.local_ae_qualifier = Some(q);
-    }
-    // The client's own identity is what it transmits as the *calling* side of
-    // the handshake: the TSEL as the CR's src-TSAP, the SSEL/PSEL as the CN's
-    // calling selector and the CP's calling selector. The AP title and AE
-    // qualifier are likewise the calling values in the AARQ. A server (or peer)
-    // observes exactly these, so they map to the `local_*` fields — the
-    // `remote_*` fields name the called side and do not affect what the client
-    // sends.
-    if let Some(t) = &assoc.tsel {
+    cfg.local_ae_qualifier = assoc.local.ae_qualifier;
+    if let Some(t) = &assoc.local.tsel {
         cfg.local_tsap = t.clone();
     }
-    if let Some(s) = &assoc.ssel {
-        cfg.local_ssel = Some(s.clone());
+    cfg.local_ssel = assoc.local.ssel.clone();
+    cfg.local_psel = assoc.local.psel.clone();
+    // Remote side: the peer.
+    if let Some(ap) = &assoc.remote.ap_title {
+        if !ap.trim().is_empty() {
+            cfg.remote_ap_title = Some(parse_ap_title("remote", ap)?);
+        }
     }
-    if let Some(p) = &assoc.psel {
-        cfg.local_psel = Some(p.clone());
+    cfg.remote_ae_qualifier = assoc.remote.ae_qualifier;
+    if let Some(t) = &assoc.remote.tsel {
+        cfg.remote_tsap = t.clone();
     }
+    cfg.remote_ssel = assoc.remote.ssel.clone();
+    cfg.remote_psel = assoc.remote.psel.clone();
     Ok(cfg)
+}
+
+/// Parse a dotted-decimal AP title (OID arcs, e.g. `"1.2.3.4"`) into an
+/// [`ObjectIdentifier`], failing with a clear error that names the side
+/// (local/remote) and the offending arc.
+fn parse_ap_title(side: &str, ap: &str) -> Result<mms_proto::ber::ObjectIdentifier, SimError> {
+    let ap = ap.trim();
+    if ap.is_empty() {
+        return Err(SimError::Config(format!(
+            "association {side}: empty AP title"
+        )));
+    }
+    let arcs: Vec<u32> = ap
+        .split('.')
+        .map(|part| {
+            part.trim().parse().map_err(|e| {
+                SimError::Config(format!(
+                    "association {side}: bad AP title arc {part:?}: {e}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if arcs.is_empty() {
+        return Err(SimError::Config(format!(
+            "association {side}: empty AP title"
+        )));
+    }
+    Ok(mms_proto::ber::ObjectIdentifier::from_arcs(&arcs))
 }
 
 /// Seconds since the Unix epoch (for default timestamps).
@@ -605,8 +723,6 @@ pub enum SimError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("{0}")]
-    Other(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -658,8 +774,13 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
             )));
         }
     }
+    // Reject mutation values that do not fit the point's kind at startup;
+    // the mutation loop would otherwise skip them silently at runtime.
+    validate_mutation_values(cfg)?;
 
-    let domain = DomainName::from(Identifier::new(&cfg.domain).map_err(|e| SimError::Config(e.to_string()))?);
+    let domain = DomainName::from(
+        Identifier::new(&cfg.domain).map_err(|e| SimError::Config(e.to_string()))?,
+    );
 
     // ---- points -----------------------------------------------------------
     // Points are keyed by their full [`ObjectName`] key (as the provider's
@@ -670,12 +791,21 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
     let mut point_kinds: HashMap<String, PointKind> = HashMap::new();
     for p in &cfg.points {
         if point_items.contains_key(&p.name) {
-            return Err(SimError::Config(format!("duplicate point name {:?}", p.name)));
+            return Err(SimError::Config(format!(
+                "duplicate point name {:?}",
+                p.name
+            )));
         }
-        let name = object_name(Some(&domain), &Identifier::new(&p.name).map_err(|e| SimError::Config(e.to_string()))?);
+        let name = object_name(
+            Some(&domain),
+            &Identifier::new(&p.name).map_err(|e| SimError::Config(e.to_string()))?,
+        );
         let value = initial_value(p.kind, &p.initial)?;
         point_items.insert(p.name.clone(), name.clone());
-        points.insert(crate::provider::object_key(&name), (name.clone(), p.kind, value));
+        points.insert(
+            crate::provider::object_key(&name),
+            (name.clone(), p.kind, value),
+        );
         point_kinds.insert(p.name.clone(), p.kind);
     }
 
@@ -683,7 +813,10 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
     let mut data_sets: HashMap<String, DataSet> = HashMap::new();
     for d in &cfg.datasets {
         if data_sets.contains_key(&d.name) {
-            return Err(SimError::Config(format!("duplicate dataset name {:?}", d.name)));
+            return Err(SimError::Config(format!(
+                "duplicate dataset name {:?}",
+                d.name
+            )));
         }
         for m in &d.members {
             if !point_items.contains_key(m) {
@@ -707,12 +840,19 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
             Some(&domain),
             &Identifier::new(&d.name).map_err(|e| SimError::Config(e.to_string()))?,
         );
-        data_sets.insert(crate::provider::object_key(&ds_name), DataSet::with_object_name(ds_name, members));
+        data_sets.insert(
+            crate::provider::object_key(&ds_name),
+            DataSet::with_object_name(ds_name, members),
+        );
     }
 
     // ---- version + features ------------------------------------------------
-    let version = (cfg.tase2_version.major as u64, cfg.tase2_version.minor as u64);
-    let features = mms_proto::ber::BitString::from_bits(&Feature::bit_vector(&cfg.supported_features));
+    let version = (
+        cfg.tase2_version.major as u64,
+        cfg.tase2_version.minor as u64,
+    );
+    let features =
+        mms_proto::ber::BitString::from_bits(&Feature::bit_vector(&cfg.supported_features));
 
     // ---- bilateral table ----------------------------------------------------
     let bilat = BilateralTable::new(&cfg.bilateral_table_id);
@@ -735,13 +875,16 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
         if let Some(name) = point_items.get(point) {
             bilat = bilat.allow_point(name, (*level).into());
         } else {
-            return Err(SimError::Config(format!("access override references unknown point {point:?}")));
+            return Err(SimError::Config(format!(
+                "access override references unknown point {point:?}"
+            )));
         }
     }
 
     // ---- provider ----------------------------------------------------------
-    let provider: std::sync::Arc<crate::provider::SimProvider> =
-        std::sync::Arc::new(crate::provider::SimProvider::new(points, data_sets, version, features));
+    let provider: std::sync::Arc<crate::provider::SimProvider> = std::sync::Arc::new(
+        crate::provider::SimProvider::new(points, data_sets, version, features),
+    );
 
     Ok(SimModel {
         provider,
@@ -754,10 +897,49 @@ pub fn build_model(cfg: &SimConfig) -> Result<SimModel, SimError> {
     })
 }
 
-/// Build a mutation step value for `point` (must exist) from a JSON value.
-/// Uses the immutable startup-side map rather than the provider's async lock
-/// (which would panic when called from a tokio worker thread).
-pub fn mutation_value(model: &SimModel, point_name: &str, raw: &serde_json::Value) -> Option<PointValue> {
-    let kind = *model.point_kinds.get(point_name)?;
-    value_for_kind(kind, raw)
+/// Build a mutation step value for `point` from a JSON value. Uses the
+/// immutable startup-side map rather than the provider's async lock (which
+/// would panic when called from a tokio worker thread). Returns `None` only
+/// when the point name is unknown; a value that does not fit the point kind
+/// is a configuration error (mutation values are validated at startup, so
+/// this is normally unreachable).
+pub fn mutation_value(
+    model: &SimModel,
+    point_name: &str,
+    raw: &serde_json::Value,
+) -> Result<Option<PointValue>, SimError> {
+    let Some(kind) = model.point_kinds.get(point_name) else {
+        return Ok(None);
+    };
+    Ok(Some(initial_value(*kind, raw)?))
+}
+
+/// Validate every mutation value against its point's kind at startup so a bad
+/// test configuration fails immediately instead of being skipped at runtime.
+pub fn validate_mutation_values(cfg: &SimConfig) -> Result<(), SimError> {
+    // Point name → kind, from the config itself (no provider needed).
+    let kinds: HashMap<&str, PointKind> = cfg
+        .points
+        .iter()
+        .map(|p| (p.name.as_str(), p.kind))
+        .collect();
+    for mp in &cfg.mutation.points {
+        let Some(kind) = kinds.get(mp.name.as_str()) else {
+            return Err(SimError::Config(format!(
+                "mutation point {:?} is not a configured point",
+                mp.name
+            )));
+        };
+        for (i, v) in mp.values.iter().enumerate() {
+            initial_value(*kind, v).map_err(|e| {
+                SimError::Config(format!(
+                    "mutation point {:?} value[{}] {}: {e}",
+                    mp.name,
+                    i,
+                    describe_value(v)
+                ))
+            })?;
+        }
+    }
+    Ok(())
 }

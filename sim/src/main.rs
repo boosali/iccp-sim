@@ -13,27 +13,30 @@
 mod client_sim;
 mod config;
 mod provider;
+mod self_test;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::{build_model, load_config_file, mutation_value, Mode, SimModel};
+use config::{build_assoc_config, build_model, load_config_file, mutation_value, Mode, SimModel};
 use provider::SimProvider;
 use tase2::{
-    AssocConfig, DataProvider, DefaultLoggingHandler, Identifier, ObjectName, ServeOptions,
-    Tase2Server, TransferSetManager,
+    DataProvider, DefaultLoggingHandler, Identifier, ObjectName, ServeOptions, Tase2Server,
+    TransferSetManager,
 };
 
 struct Cli {
-    config: PathBuf,
+    config: Option<PathBuf>,
     port: Option<u16>,
+    self_test: bool,
 }
 
 fn parse_args() -> Result<Cli, String> {
     let mut config = None;
     let mut port = None;
+    let mut self_test = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -44,6 +47,7 @@ fn parse_args() -> Result<Cli, String> {
                 let v = args.next().ok_or("--port needs a value")?;
                 port = Some(v.parse().map_err(|_| format!("bad --port {v:?}"))?);
             }
+            "--self-test" => self_test = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option {other:?}"));
             }
@@ -57,10 +61,13 @@ fn parse_args() -> Result<Cli, String> {
             }
         }
     }
+    if !self_test && config.is_none() {
+        return Err("missing -c/--config <file> (a JSON config)".into());
+    }
     Ok(Cli {
-        config: config
-            .ok_or("missing -c/--config <file> (a JSON config)")?,
+        config,
         port,
+        self_test,
     })
 }
 
@@ -75,7 +82,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = parse_args()?;
-    let mut cfg = load_config_file(&cli.config).map_err(|e| e.to_string())?;
+
+    // Functional self-test: the simulator drives itself (a local client
+    // associates with a local server over the real protocol stack).
+    if cli.self_test {
+        let passed = self_test::run().await;
+        if !passed {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    let mut cfg =
+        load_config_file(&cli.config.expect("checked in parse_args")).map_err(|e| e.to_string())?;
 
     // Dispatch on role. `--port` overrides the active role's port.
     match cfg.mode {
@@ -101,9 +120,11 @@ async fn run_server(cfg: &config::SimConfig) -> Result<(), Box<dyn std::error::E
     // Bind. The address comes from the config `ip` field (default 0.0.0.0 =
     // all interfaces); port 102 may need elevation on some OSes, and a CLI
     // --port override lets the operator pick an alternate port without
-    // editing the config.
+    // editing the config. The server's OSI/ACSE identity comes from the
+    // config `association` block (an empty block keeps the defaults).
     let addr: SocketAddr = (model.bind_ip, model.port).into();
-    let server = Tase2Server::bind(addr, AssocConfig::default()).await?;
+    let assoc = build_assoc_config(&cfg.association).map_err(|e| e.to_string())?;
+    let server = Tase2Server::bind(addr, assoc).await?;
     tracing::info!(%addr, domain = %model.domain, "iccp-sim listening");
 
     // Shared serve state.
@@ -113,7 +134,7 @@ async fn run_server(cfg: &config::SimConfig) -> Result<(), Box<dyn std::error::E
 
     // Optional self-mutation loop driving OBJECT_CHANGE reports.
     if model.mutation.interval_secs > 0 && !model.mutation.points.is_empty() {
-        tokio::spawn(spawn_mutation_task(model, manager.clone()));
+        spawn_mutation_task(model, manager.clone()).await;
     }
 
     // Accept loop: serve each association in its own task so multiple (or
@@ -159,8 +180,12 @@ async fn run_server(cfg: &config::SimConfig) -> Result<(), Box<dyn std::error::E
 
 /// Background task that steps each configured point through its value list on a
 /// timer, writing the new value and notifying the transfer-set manager so any
-/// enabled DS transfer set emits an OBJECT_CHANGE report.
-async fn spawn_mutation_task(model: SimModel, manager: Arc<TransferSetManager<SimProvider>>) {
+/// enabled DS transfer set emits an OBJECT_CHANGE report. Shared by the server
+/// role and the `--self-test` mode.
+pub(crate) async fn spawn_mutation_task(
+    model: SimModel,
+    manager: Arc<TransferSetManager<SimProvider>>,
+) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_secs(model.mutation.interval_secs);
     let mut idx = 0usize;
     tokio::spawn(async move {
@@ -182,7 +207,9 @@ async fn spawn_mutation_task(model: SimModel, manager: Arc<TransferSetManager<Si
                     Some(v) => v,
                     None => continue,
                 };
-                let Some(value) = mutation_value(&model, &mp.name, raw) else {
+                // Values are validated at startup, so this only fails for a
+                // genuinely unknown point name (or a config edited in place).
+                let Ok(Some(value)) = mutation_value(&model, &mp.name, raw) else {
                     continue;
                 };
                 let Some(name) = domain_point_name(&model, &mp.name) else {
@@ -195,7 +222,7 @@ async fn spawn_mutation_task(model: SimModel, manager: Arc<TransferSetManager<Si
                 manager.notify_point_changed(&name);
             }
         }
-    });
+    })
 }
 
 /// Reconstruct the domain-specific [`ObjectName`] for a point item name.
@@ -208,7 +235,11 @@ fn domain_point_name(model: &SimModel, item: &str) -> Option<ObjectName> {
 /// Render an optional byte selector as dotted decimal, or "-" when absent.
 fn sel_str(b: Option<&[u8]>) -> String {
     match b {
-        Some(s) if !s.is_empty() => s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("."),
+        Some(s) if !s.is_empty() => s
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join("."),
         _ => "-".into(),
     }
 }

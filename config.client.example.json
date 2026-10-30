@@ -15,11 +15,20 @@
       "event_code": 0
     },
     "association": {
-      "ap_title": "1.2.3.4",
-      "ae_qualifier": 1,
-      "tsel": "0.0.0.1",
-      "ssel": "0.1",
-      "psel": "0.0.0.1"
+      "local": {
+        "ap_title": "1.2.3.4",
+        "ae_qualifier": 1,
+        "tsel": "0.0.0.1",
+        "ssel": "0.1",
+        "psel": "0.0.0.1"
+      },
+      "remote": {
+        "ap_title": "1.2.3.99",
+        "ae_qualifier": 2,
+        "tsel": "0.0.0.17",
+        "ssel": "0.17",
+        "psel": "0.0.0.17"
+      }
     },
     "run_for_secs": 0
   }

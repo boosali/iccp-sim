@@ -87,7 +87,11 @@ impl EventHandler for DefaultLoggingHandler {
 /// when the value is absent or empty.
 fn fmt_bytes(b: Option<&[u8]>) -> String {
     match b {
-        Some(s) if !s.is_empty() => s.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("."),
+        Some(s) if !s.is_empty() => s
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join("."),
         _ => "-".to_string(),
     }
 }

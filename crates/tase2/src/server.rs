@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use mms_proto::assoc::{AssociationInfo, AssocConfig, DisconnectReason, Role};
+use mms_proto::assoc::{AssocConfig, AssociationInfo, DisconnectReason, Role};
 use mms_proto::mms::{
     ConfirmedServiceRequest, ConfirmedServiceResponse, MmsPdu, ServiceError, UnconfirmedService,
 };

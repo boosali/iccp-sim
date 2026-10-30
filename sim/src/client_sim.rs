@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use tase2::{
-    names, object_name, DsTransferSet, DomainName, Identifier, ObjectName, Tase2Client, Transport,
+    names, object_name, DomainName, DsTransferSet, Identifier, ObjectName, Tase2Client, Transport,
 };
 
 use crate::config::{build_assoc_config, build_conditions, ClientCfg};
@@ -36,16 +36,16 @@ pub async fn run(cfg: &ClientCfg) -> Result<(), String> {
         .map_err(|e| format!("bad peer_ip {:?}: {e}", cfg.peer_ip))?;
     let addr: SocketAddr = (ip, cfg.port).into();
 
-    let assoc = build_assoc_config(&cfg.association)
-        .map_err(|e| format!("bad association config: {e}"))?;
+    let assoc =
+        build_assoc_config(&cfg.association).map_err(|e| format!("bad association config: {e}"))?;
     let transport = Transport::tcp(addr);
     let mut client = Tase2Client::connect(transport, assoc)
         .await
         .map_err(|e| format!("associate {addr} failed: {e}"))?;
     tracing::info!(%addr, "associated as TASE.2 client");
 
-    let domain_id = Identifier::new(&cfg.domain)
-        .map_err(|e| format!("bad domain {:?}: {e}", cfg.domain))?;
+    let domain_id =
+        Identifier::new(&cfg.domain).map_err(|e| format!("bad domain {:?}: {e}", cfg.domain))?;
     let domain = DomainName::from(domain_id);
 
     let result = async {
@@ -128,7 +128,9 @@ async fn read_version(client: &mut Tase2Client, name: &ObjectName) -> Option<(u6
         _ => return None,
     };
     match resp.access_results.first()? {
-        mms_proto::mms::AccessResult::Success(mms_proto::mms::Data::Structure(v)) if v.len() == 2 => {
+        mms_proto::mms::AccessResult::Success(mms_proto::mms::Data::Structure(v))
+            if v.len() == 2 =>
+        {
             let major = match &v[0] {
                 mms_proto::mms::Data::Unsigned(n) => *n,
                 _ => return None,
@@ -226,8 +228,8 @@ async fn recv_loop(
     members: &[ObjectName],
     run_for_secs: u64,
 ) -> Result<(), String> {
-    let deadline = (run_for_secs > 0)
-        .then(|| tokio::time::Instant::now() + Duration::from_secs(run_for_secs));
+    let deadline =
+        (run_for_secs > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(run_for_secs));
 
     let mut count = 0u64;
     loop {

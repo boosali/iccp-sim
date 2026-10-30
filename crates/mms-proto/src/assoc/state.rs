@@ -557,7 +557,8 @@ impl MmsConnection {
                 self.negotiated = Some(init_resp);
                 self.deadlines.clear();
                 self.transition(State::Associated);
-                self.actions.push(MmsAction::AssociationUp(self.peer_info.clone()));
+                self.actions
+                    .push(MmsAction::AssociationUp(self.peer_info.clone()));
             }
             Err(e) => self.fail(DisconnectReason::Protocol(e)),
         }
@@ -594,7 +595,8 @@ impl MmsConnection {
         self.transition(State::Associated);
         // Client side: the called server's identity is not carried in the
         // AARE, so the peer info stays empty here.
-        self.actions.push(MmsAction::AssociationUp(self.peer_info.clone()));
+        self.actions
+            .push(MmsAction::AssociationUp(self.peer_info.clone()));
     }
 
     // -----------------------------------------------------------------
